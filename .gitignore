@@ -1,0 +1,6 @@
+build/
+buildVS/
+.cache/
+.git/
+compile_commands.json
+

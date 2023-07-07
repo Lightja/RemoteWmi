@@ -1,0 +1,46 @@
+cmake_minimum_required(VERSION 3.20)
+project(Test)
+
+# Theres a built in way to do this but its even more difficult to read.
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(d_IF_DEBUG "d")
+    set(_d_IF_DEBUG "_d")
+    set(debugdir_IF_DEBUG "debug/")
+    set(lib_IF_DEBUG "lib")
+    set(gd_IF_DEBUG "-gd")
+    set(Debug_IF_DEBUG "Debug")
+else()
+    # empty strings for release builds :)
+    set(d_IF_DEBUG "")
+    set(_d_IF_DEBUG "")
+    set(debugdir_IF_DEBUG "")
+    set(lib_IF_DEBUG "")
+    set(dg_IF_DEBUG "")
+    set(Debug_IF_DEBUG "")
+endif()
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded${Debug_IF_DEBUG}")
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# Neorustak
+
+file(GLOB SOURCES "src/*.cpp")
+add_executable(Test ${SOURCES})
+
+target_include_directories(Test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+)
+
+# target_link_directories(Test PRIVATE) # Not Needed atm
+
+target_link_libraries(Test PRIVATE 
+    ws2_32.lib 
+    strsafe.lib 
+    Advapi32.lib 
+    Credui.lib
+    pdh.lib 
+    wbemuuid.lib 
+    iphlpapi.lib
+)
+
+
+
