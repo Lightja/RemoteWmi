@@ -6,8 +6,11 @@ namespace RemoteWmi {
 
     void InitCom();
     wstring GetClientDomain();
-    SEC_WINNT_AUTH_IDENTITY_W* GetAuth(wstring user, wstring password, wstring domain);
+    SEC_WINNT_AUTH_IDENTITY_W* GetAuthStruct(wstring user, wstring password, wstring domain);
+    unique_ptr<map<wstring, vector<VARIANT>>> MapResults(IEnumWbemClassObject* pEnumerator);
     void OutputWMIObjectValues(IEnumWbemClassObject* pEnumerator);
+    void PrintResults(IEnumWbemClassObject* pEnumerator);
+    void PrintResults(unique_ptr<map<wstring, vector<VARIANT>>> results);
     string GetAuthnSvcStr(unsigned long enum_value);
     string GetAuthzSvcStr(unsigned long enum_value);
     string GetAuthnLevelStr(unsigned long enum_value);

@@ -36,21 +36,32 @@ Here's a basic example of how to use RemoteWmi to connect to a remote WMI provid
 
 ```
 InitCom();
-Wmi test_wmi;
-test_wmi = Wmi(L"192.168.1.1", L".\\testuser",L"testpassword");
-OutputWMIObjectValues(test_wmi.Query("SELECT DeviceID, FreeSpace, Size FROM Win32_LogicalDisk WHERE DriveType=3"));
-OutputWMIObjectValues(test_wmi.Query("SELECT TotalVisibleMemorySize, FreePhysicalMemory FROM Win32_OperatingSystem"));
-test_wmi = Wmi(L"192.168.1.1", L"testdomain\\testuser",L"testpassword");
-OutputWMIObjectValues(test_wmi.Query("SELECT DeviceID, FreeSpace, Size FROM Win32_LogicalDisk WHERE DriveType=3"));
-OutputWMIObjectValues(test_wmi.Query("SELECT TotalVisibleMemorySize, FreePhysicalMemory FROM Win32_OperatingSystem"));
-test_wmi = Wmi(); // local Wmi connection
-OutputWMIObjectValues(test_wmi.Query("SELECT DeviceID, FreeSpace, Size FROM Win32_LogicalDisk WHERE DriveType=3"));
-OutputWMIObjectValues(test_wmi.Query("SELECT TotalVisibleMemorySize, FreePhysicalMemory FROM Win32_OperatingSystem"));
+IEnumWbemClassObject* pEnumerator;
+unique_ptr<map<wstring, vector<VARIANT>>> results;
+
+Wmi* test_wmi1 = new Wmi(); //local WMI when no creds are provided
+results = test_wmi1->Query("SELECT DeviceID, FreeSpace, Size FROM Win32_LogicalDisk WHERE DriveType=3");
+PrintResults(std::move(results));
+delete test_wmi1;
+
+Wmi* test_wmi2 = new Wmi(L"192.168.1.1", L".\\testuser",L"testpassword1");
+results = test_wmi2->Query("SELECT DeviceID, FreeSpace, Size FROM Win32_LogicalDisk WHERE DriveType=3");
+PrintResults(std::move(results));
+delete test_wmi2;
+
+Wmi* test_wmi3 = new Wmi(L"192.168.1.1", L"testuser",L"testpassword1");
+results = test_wmi3->Query("SELECT DeviceID, FreeSpace, Size FROM Win32_LogicalDisk WHERE DriveType=3");
+PrintResults(std::move(results));
+delete test_wmi3;
+
 CoUninitialize();
 ```
 
+
 ## Additional useful Wmi Documentation:
+
 [Microsoft Example: Setting Security](https://github.com/microsoft/Windows-classic-samples/blob/main/Samples/Win7Samples/sysmgmt/wmi/vc/security/security.cpp)
+
 [Microsoft Documentation: Creating a WMI Application Using C++](https://learn.microsoft.com/en-us/windows/win32/wmisdk/creating-a-wmi-application-using-c-)
 
 ## Contribution

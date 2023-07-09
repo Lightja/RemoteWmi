@@ -33,36 +33,34 @@ namespace RemoteWmi {
         if (FAILED(hres)) { std::cout << "Failed to initialize security." << std::endl; CoUninitialize(); return;}
     }
 
-    std::wstring GetClientDomain() {
-        std::wstring domain; IWbemLocator*  pLoc = NULL; IWbemServices* pSvc = NULL;
+    wstring GetClientDomain() {
+        wstring domain; IWbemLocator*  pLoc = NULL; IWbemServices* pSvc = NULL; IEnumWbemClassObject* pEnumerator;
         std::wcout << L"Attempting to retrieve domain..." << std::endl;
         CoCreateInstance(CLSID_WbemLocator,0,CLSCTX_INPROC_SERVER,IID_IWbemLocator,(LPVOID*)&pLoc);
         pLoc->ConnectServer(bstr_t(L"ROOT\\CIMV2"),NULL,NULL,0,NULL,0,0,&pSvc); pLoc->Release();
-        IEnumWbemClassObject* pEnumerator;
         pSvc->ExecQuery(bstr_t("WQL"),bstr_t("SELECT Domain FROM Win32_ComputerSystem"),WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY,NULL,&pEnumerator);
         while (pEnumerator) {
             ULONG uReturn = 0; IWbemClassObject *pclsObj; VARIANT vtProp;
-            HRESULT hr = pEnumerator->Next(WBEM_INFINITE, 1, &pclsObj, &uReturn);
-            if (0 == uReturn) 
+            HRESULT hres = pEnumerator->Next(WBEM_INFINITE, 1, &pclsObj, &uReturn);
+            if (hres != S_OK) 
                 break;
-            hr = pclsObj->Get(L"Domain", 0, &vtProp, 0, 0);
-            pclsObj->Release();
-            if (SUCCEEDED(hr)) { domain = wstring(_bstr_t(vtProp.bstrVal)); VariantClear(&vtProp); }
+            hres = pclsObj->Get(L"Domain", 0, &vtProp, 0, 0); pclsObj->Release();
+            if (SUCCEEDED(hres)) { domain = wstring(vtProp.bstrVal); VariantClear(&vtProp); }
         }
         pSvc->Release();
         std::wcout << L"Retrieved Domain: " << domain << std::endl;
         return domain;
     }
 
-    SEC_WINNT_AUTH_IDENTITY_W* GetAuth(wstring user, wstring password, wstring domain) {
+    SEC_WINNT_AUTH_IDENTITY_W* GetAuthStruct(wstring user, wstring password, wstring domain) {
         SEC_WINNT_AUTH_IDENTITY_W* auth_identity = new SEC_WINNT_AUTH_IDENTITY_W;
         ZeroMemory(auth_identity, sizeof(SEC_WINNT_AUTH_IDENTITY_W));
         auth_identity->User     = new unsigned short[32];
         auth_identity->Password = new unsigned short[32];
-        StringCbCopyW((LPWSTR)auth_identity->User,     32 * sizeof(WCHAR), user.c_str());
-        StringCbCopyW((LPWSTR)auth_identity->Password, 32 * sizeof(WCHAR), password.c_str());
         auth_identity->UserLength     = user.length();
         auth_identity->PasswordLength = password.length();
+        StringCbCopyW((LPWSTR)auth_identity->User,     32 * sizeof(WCHAR), user.c_str());
+        StringCbCopyW((LPWSTR)auth_identity->Password, 32 * sizeof(WCHAR), password.c_str());
         if (domain.length() > 0) {
             auth_identity->Domain = new unsigned short[32];
             StringCbCopyW((LPWSTR)auth_identity->Domain,   32 * sizeof(WCHAR), domain.c_str());
@@ -72,35 +70,61 @@ namespace RemoteWmi {
         return auth_identity;
     }
 
-    void OutputWMIObjectValues(IEnumWbemClassObject* pEnumerator) {
-        std::cout << "outputting WQL query results!!!" << std::endl;
-        if (!pEnumerator) { std::cout << "Invalid enumerator! (Null)" << std::endl;
-            return; }
-        ULONG uReturn = 0; IWbemClassObject* pObj = nullptr;
-        HRESULT hres_result = pEnumerator->Next(WBEM_INFINITE, 1, &pObj, &uReturn);
-        std::cout << "Next Result: 0x" << std::hex << hres_result << std::dec << " - " << HresultToString(hres_result);
-        while (hres_result == S_OK && uReturn > 0) {
-            VARIANT vtValue; CIMTYPE propType; BSTR column;
-            HRESULT hres = pObj->BeginEnumeration(WBEM_FLAG_NONSYSTEM_ONLY);
-            if (SUCCEEDED(hres)) {
-                while (pObj->Next(0, &column, &vtValue, &propType, nullptr) == S_OK) {
-                    std::wstring propName;
-                    switch (propType) {
-                        case CIM_SINT32:  propName = std::wstring(column); std::wcout << propName << ": " << vtValue.intVal << " "; break;
-                        case CIM_UINT32:  propName = std::wstring(column); std::wcout << propName << ": " << vtValue.uintVal << " "; break;
-                        case CIM_STRING:  propName = std::wstring(column); std::wcout << propName << ": " << vtValue.bstrVal << " "; break;
-                        case CIM_UINT64:  propName = std::wstring(column); std::wcout << propName << ": " << vtValue.uintVal << " "; break;
-                        case CIM_BOOLEAN: propName = std::wstring(column); std::wcout << propName << ": " << vtValue.boolVal << " "; break;
-                        default:          propName = std::wstring(column); std::wcout << propName << ": " << vtValue.bstrVal << " "; break; }
-                    VariantClear(&vtValue);
-                }
-                pObj->EndEnumeration();
+    unique_ptr<map<wstring, vector<VARIANT>>> MapResults(IEnumWbemClassObject* pEnumerator) {
+        unique_ptr<map<wstring, vector<VARIANT>>> results = make_unique<map<wstring, vector<VARIANT>>>();
+        ULONG uReturn = 0; HRESULT hres;
+        if (pEnumerator == nullptr) 
+            return results;
+        while (true) {
+            IWbemClassObject* result = nullptr; VARIANT vt_obj; BSTR column;                
+            /* HRESULT hres = pEnumerator->Next(WBEM_INFINITE, 1, &result, &uReturn); */
+            if ((hres = pEnumerator->Next(WBEM_INFINITE, 1, &result, &uReturn)) != S_OK) { if (hres != 1) std::cout << "ERROR enumerating results, Next() returned error 0x" << std::hex << hres << std::dec << " - " << HresultToString(hres);//1 means we just reached the end and is normal, only output if it an abnormal error.
+                break;
             }
-            pObj->Release();
-            hres_result = pEnumerator->Next(WBEM_INFINITE, 1, &pObj, &uReturn);
-            std::cout << "Next Result: 0x" << std::hex << hres_result << std::dec << " - " << HresultToString(hres_result);
+            result->BeginEnumeration(WBEM_FLAG_NONSYSTEM_ONLY);
+            while (result->Next(0, &column, &vt_obj, nullptr, nullptr) == S_OK) {
+                (*results)[wstring(column)].push_back(vt_obj);
+                SysFreeString(column);
+            }
+            result->EndEnumeration(); result->Release();
+        } 
+        return results;
+    }
+
+    void OutputWMIObjectValues(IEnumWbemClassObject* pEnumerator) {PrintResults(pEnumerator);}
+    void PrintResults(IEnumWbemClassObject* pEnumerator) {
+        if (!pEnumerator) { std::cout << "Invalid results enumerator! (Null)" << std::endl;
+            return; 
         }
-        std::cout << "done outputting WQL query results!!!" << std::endl;
+        ULONG uReturn = 0; IWbemClassObject* result = nullptr;
+        while (pEnumerator->Next(WBEM_INFINITE, 1, &result, &uReturn) == S_OK && uReturn > 0) {
+            VARIANT vtValue; CIMTYPE propType; BSTR column;
+            if (FAILED(result->BeginEnumeration(WBEM_FLAG_NONSYSTEM_ONLY))) { result->Release(); std::cout << "Failed to begin enumeration of WMI object properties!" << std::endl;
+                continue; 
+            }
+            while (result->Next(0, &column, &vtValue, &propType, nullptr) == S_OK) {
+                switch (propType) {
+                    case CIM_SINT32:  std::wcout << column << ": " << vtValue.intVal  << " "; break;
+                    case CIM_UINT32:  std::wcout << column << ": " << vtValue.uintVal << " "; break;
+                    case CIM_STRING:  std::wcout << column << ": " << vtValue.bstrVal << " "; break;
+                    case CIM_UINT64:  std::wcout << column << ": " << vtValue.uintVal << " "; break;
+                    case CIM_BOOLEAN: std::wcout << column << ": " << vtValue.boolVal << " "; break;
+                    default:          std::wcout << column << ": " << vtValue.bstrVal << " "; break; 
+                }
+            }
+            result->EndEnumeration(); result->Release();
+        }
+    }
+
+    void PrintResults(unique_ptr<map<wstring, vector<VARIANT>>> results) {
+        for (pair<wstring, vector<VARIANT>> result : *results) {
+            std::wcout << result.first << ": ";
+            for (size_t i = 0; i < result.second.size(); ++i) {
+                std::wcout << result.second[i].bstrVal;
+                if (i < result.second.size() - 1) std::wcout << ", ";
+            }
+            std::wcout << std::endl;
+        }
     }
 
     string GetAuthnSvcStr(unsigned long enum_value) {
@@ -163,15 +187,15 @@ namespace RemoteWmi {
         switch (enum_value) {
             case 0: return "EOAC_NONE";
             case 1: return "EOAC_MUTUAL_AUTH";
+            case 0x2: return "EOAC_SECURE_REFS";
+            case 0x4: return "EOAC_ACCESS_CONTROL";
+            case 0x8: return "EOAC_APPID";
+            case 0x10: return "EOAC_DYNAMIC";
             case 0x20: return "EOAC_STATIC_CLOAKING";
             case 0x40: return "EOAC_DYNAMIC_CLOAKING";
             case 0x80: return "EOAC_ANY_AUTHORITY";
             case 0x100: return "EOAC_MAKE_FULLSIC";
             case 0x800: return "EOAC_DEFAULT";
-            case 0x2: return "EOAC_SECURE_REFS";
-            case 0x4: return "EOAC_ACCESS_CONTROL";
-            case 0x8: return "EOAC_APPID";
-            case 0x10: return "EOAC_DYNAMIC";
             case 0x200: return "EOAC_REQUIRE_FULLSIC";
             case 0x400: return "EOAC_AUTO_IMPERSONATE";
             case 0x1000: return "EOAC_DISABLE_AAA";
@@ -184,46 +208,46 @@ namespace RemoteWmi {
     void PrintAuthIdentity(const SEC_WINNT_AUTH_IDENTITY_W& auth_identity) {
         std::wstring_convert<std::codecvt_utf16<wchar_t>, wchar_t> converter;
         std::wstringstream wss;
-        wss << L"--------------------------Printing SEC_WINNT_AUTH_IDENTITY_W--------------------------" << std::endl;
-        wss << L"User: "            << (auth_identity.User ? std::wstring(reinterpret_cast<const WCHAR*>(auth_identity.User)) : std::wstring(L"(null)")) << std::endl;
-        wss << L"User length: "     <<  auth_identity.UserLength << std::endl;
-        wss << L"Domain: "          << (auth_identity.Domain ? std::wstring(reinterpret_cast<const WCHAR*>(auth_identity.Domain)) : std::wstring(L"(null)")) << std::endl;
-        wss << L"Domain length: "   <<  auth_identity.DomainLength << std::endl;
-        wss << L"Password: "        << (auth_identity.Password ? L"******" : L"(null)") << std::endl; // For security reasons, don't print the actual password
+        wss << L"--------------Printing SEC_WINNT_AUTH_IDENTITY_W--------------" << std::endl;
+        wss << L"Domain: "          << (auth_identity.Domain   ? wstring(reinterpret_cast<const WCHAR*>(auth_identity.Domain)) : wstring(L"(null)")) << std::endl;
+        wss << L"User: "            << (auth_identity.User     ? wstring(reinterpret_cast<const WCHAR*>(auth_identity.User))   : wstring(L"(null)")) << std::endl;
+        wss << L"Password: "        << (auth_identity.Password ? L"******" : L"(null)") << std::endl;
+        wss << L"Domain length: "   <<  auth_identity.DomainLength   << std::endl;
+        wss << L"User length: "     <<  auth_identity.UserLength     << std::endl;
         wss << L"Password length: " <<  auth_identity.PasswordLength << std::endl;
         std::wcout << wss.str() << std::endl;
     }
 
     void PrintProxyBlanket(IUnknown* pSvc) {
-        HRESULT hres; DWORD authn_svc, authz_svc, p_auth_level, p_impersonation_level, p_capabilities; LPOLESTR p_server_princ_name; RPC_AUTH_IDENTITY_HANDLE p_auth_identity;
-        hres = CoQueryProxyBlanket(pSvc, &authn_svc, &authz_svc, &p_server_princ_name, &p_auth_level, &p_impersonation_level, &p_auth_identity, &p_capabilities);
+        HRESULT hres; DWORD authentication_svc, authorization_svc, authentication_level, impersonation_level, capabilities; LPOLESTR p_server_princ_name; RPC_AUTH_IDENTITY_HANDLE p_auth_identity;
+        hres = CoQueryProxyBlanket(pSvc, &authentication_svc, &authorization_svc, &p_server_princ_name, &authentication_level, &impersonation_level, &p_auth_identity, &capabilities);
         std::cout << "Service CoQueryProxyBlanket() result: 0x" << std::hex << hres << std::dec << " - " << HresultToString(hres);
         if (FAILED(hres)) 
             return;
         std::cout << "---------------- Read Proxy Blanket ----------------" << std::endl;
         if (p_server_princ_name && wcslen(p_server_princ_name) > 0) std::wcout << L"p_server_princ_name: " << wstring(p_server_princ_name) << std::endl; //HexToASCII(wstringToString(p_server_princ_name)) << std::endl;
-        std::cout << "authn_svc: "             << authn_svc             << " - " << GetAuthnSvcStr(authn_svc) << std::endl;
-        std::cout << "authz_svc: "             << authz_svc             << " - " << GetAuthzSvcStr(authz_svc) << std::endl;
-        std::cout << "p_authn_level: "         << p_auth_level          << " - " << GetAuthnLevelStr(p_auth_level) << std::endl;
-        std::cout << "p_impersonation_level: " << p_impersonation_level << " - " << GetImpLevelStr(p_impersonation_level) << std::endl;
-        std::cout << "p_capabilities: "        << p_capabilities        << " - " << GetCapabilitiesStr(p_capabilities) << std::endl;
+        std::cout << "authentication_svc: "   << authentication_svc   << " - " << GetAuthnSvcStr(authentication_svc) << std::endl;
+        std::cout << "authorization_svc: "    << authorization_svc    << " - " << GetAuthzSvcStr(authorization_svc) << std::endl;
+        std::cout << "authentication_level: " << authentication_level << " - " << GetAuthnLevelStr(authentication_level) << std::endl;
+        std::cout << "impersonation_level: "  << impersonation_level  << " - " << GetImpLevelStr(impersonation_level) << std::endl;
+        std::cout << "capabilities: "         << capabilities         << " - " << GetCapabilitiesStr(capabilities) << std::endl;
         IUnknown* pUnk = nullptr;
         hres = pSvc->QueryInterface(IID_IUnknown, (void**)&pUnk);
         std::cout << "QueryInterface() result: 0x" << std::hex << hres << std::dec << " - " << HresultToString(hres);
         if (FAILED(hres)) { std::cerr << "Could not get IUnknown interface above proxy." << std::endl; pUnk->Release();
             return;
         }
-        hres = CoQueryProxyBlanket(pUnk, &authn_svc, &authz_svc, &p_server_princ_name, &p_auth_level, &p_impersonation_level, &p_auth_identity, &p_capabilities);
+        hres = CoQueryProxyBlanket(pUnk, &authentication_svc, &authorization_svc, &p_server_princ_name, &authentication_level, &impersonation_level, &p_auth_identity, &capabilities);
         std::cout << "IUnknown CoQueryProxyBlanket() result: 0x" << std::hex << hres << std::dec << " - " << HresultToString(hres);
         if (FAILED(hres)) 
             return;
         std::cout << "--------- Read IUnknown (Parent) Proxy Blanket ---------" << std::endl;
         if (p_server_princ_name && wcslen(p_server_princ_name) > 0) std::wcout << L"p_server_princ_name: " << wstring(p_server_princ_name) << std::endl; //HexToASCII(wstringToString(p_server_princ_name)) << std::endl;
-        std::cout << "authn_svc: "             << authn_svc             << " - " << GetAuthnSvcStr(authn_svc) << std::endl;
-        std::cout << "authz_svc: "             << authz_svc             << " - " << GetAuthzSvcStr(authz_svc) << std::endl;
-        std::cout << "p_authn_level: "         << p_auth_level          << " - " << GetAuthnLevelStr(p_auth_level) << std::endl;
-        std::cout << "p_impersonation_level: " << p_impersonation_level << " - " << GetImpLevelStr(p_impersonation_level) << std::endl;
-        std::cout << "p_capabilities: "        << p_capabilities        << " - " << GetCapabilitiesStr(p_capabilities) << std::endl;
+        std::cout << "authentication_svc: "   << authentication_svc   << " - " << GetAuthnSvcStr(authentication_svc) << std::endl;
+        std::cout << "authorization_svc: "    << authorization_svc    << " - " << GetAuthzSvcStr(authorization_svc) << std::endl;
+        std::cout << "authentication_level: " << authentication_level << " - " << GetAuthnLevelStr(authentication_level) << std::endl;
+        std::cout << "impersonation_level: "  << impersonation_level  << " - " << GetImpLevelStr(impersonation_level) << std::endl;
+        std::cout << "capabilities: "         << capabilities         << " - " << GetCapabilitiesStr(capabilities) << std::endl;
     }
 
     bool isValidIpv4(const wstring& ipAddress) {
@@ -260,8 +284,6 @@ namespace RemoteWmi {
     }
 
     wstring ParseUser(wstring& input) {
-        if (input.empty())
-            return L"";
         size_t pos = input.find('\\');
         if (pos == string::npos)
             return input;
@@ -269,8 +291,6 @@ namespace RemoteWmi {
     }
 
     wstring ParseDomain(wstring& input) {
-        if (input.empty())
-            return L"";
         size_t pos = input.find('\\');
         if (pos == string::npos)
             return L"";
